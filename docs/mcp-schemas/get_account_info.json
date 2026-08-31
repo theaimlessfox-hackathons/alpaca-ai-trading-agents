@@ -1,0 +1,9 @@
+{
+  "name": "get_account_info",
+  "description": "Retrieves and formats the current account information including balances and status.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  }
+}

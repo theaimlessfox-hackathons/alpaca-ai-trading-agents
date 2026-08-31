@@ -1,0 +1,78 @@
+{
+  "name": "get_option_chain",
+  "description": "Retrieves option chain data for an underlying symbol, including latest trade, quote, implied volatility, and greeks for each contract. The response can be very large. Use the type (call/put), strike_price_gte/lte, expiration_date, and limit parameters to narrow results.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "underlying_symbol": {
+        "type": "string",
+        "description": "The financial instrument on which an option contract is based or derived."
+      },
+      "feed": {
+        "type": "string",
+        "enum": [
+          "opra",
+          "indicative"
+        ],
+        "default": "opra",
+        "description": "The source feed of the data. `opra` is the official OPRA feed, `indicative` is a free indicative feed where trades are delayed and quotes are modified. Default: `opra` if the user has a subscription, otherwise `indicative`.\n"
+      },
+      "limit": {
+        "type": "integer",
+        "maximum": 1000.0,
+        "minimum": 1.0,
+        "default": 100,
+        "description": "Number of maximum snapshots to return in a response.\nThe limit applies to the total number of data points, not the number per symbol!\nUse `next_page_token` to fetch the next set of responses.\n"
+      },
+      "updated_since": {
+        "type": "string",
+        "format": "date-time",
+        "description": "Filter to snapshots that were updated since this timestamp, meaning that the timestamp of the trade or the quote is greater than or equal to this value.\nFormat: RFC-3339 or YYYY-MM-DD. If missing, all values are returned.\n"
+      },
+      "page_token": {
+        "type": "string",
+        "description": "The pagination token from which to continue. The value to pass here is returned in specific requests when more data is available, usually because of a response result limit.\n"
+      },
+      "type": {
+        "type": "string",
+        "enum": [
+          "call",
+          "put"
+        ],
+        "description": "Filter contracts by the type (call or put)."
+      },
+      "strike_price_gte": {
+        "type": "number",
+        "format": "double",
+        "description": "Filter contracts with strike price greater than or equal to the specified value."
+      },
+      "strike_price_lte": {
+        "type": "number",
+        "format": "double",
+        "description": "Filter contracts with strike price less than or equal to the specified value."
+      },
+      "expiration_date": {
+        "type": "string",
+        "format": "date",
+        "description": "Filter contracts by the exact expiration date (format: YYYY-MM-DD)."
+      },
+      "expiration_date_gte": {
+        "type": "string",
+        "format": "date",
+        "description": "Filter contracts with expiration date greater than or equal to the specified date."
+      },
+      "expiration_date_lte": {
+        "type": "string",
+        "format": "date",
+        "description": "Filter contracts with expiration date less than or equal to the specified date."
+      },
+      "root_symbol": {
+        "type": "string",
+        "description": "Filter contracts by the root symbol."
+      }
+    },
+    "required": [
+      "underlying_symbol"
+    ]
+  }
+}

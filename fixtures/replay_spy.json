@@ -1,0 +1,23 @@
+{
+  "symbol": "SPY",
+  "equity": 100000,
+  "daily_pnl": -120,
+  "killed": false,
+  "positions": [
+    {"symbol": "SPY", "status": "OPEN", "open_qty": 1, "structure": "put credit"}
+  ],
+  "cycles": [
+    {
+      "verdict": "veto",
+      "reason": "short_delta",
+      "thesis": "too close to the money",
+      "critic": "Delta 0.40 is outside the band."
+    },
+    {
+      "verdict": "approve_dry",
+      "reason": "ok",
+      "thesis": "IV/RV rich on 21 DTE put spread",
+      "critic": "A gap through 500 still hurts."
+    }
+  ]
+}

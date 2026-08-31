@@ -1,0 +1,41 @@
+{
+  "name": "get_option_snapshot",
+  "description": "Retrieves comprehensive snapshots of option contracts including latest trade, quote, implied volatility, and Greeks.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "symbols": {
+        "type": "string",
+        "description": "A comma-separated list of contract symbols with a limit of 100."
+      },
+      "feed": {
+        "type": "string",
+        "enum": [
+          "opra",
+          "indicative"
+        ],
+        "default": "opra",
+        "description": "The source feed of the data. `opra` is the official OPRA feed, `indicative` is a free indicative feed where trades are delayed and quotes are modified. Default: `opra` if the user has a subscription, otherwise `indicative`.\n"
+      },
+      "updated_since": {
+        "type": "string",
+        "format": "date-time",
+        "description": "Filter to snapshots that were updated since this timestamp, meaning that the timestamp of the trade or the quote is greater than or equal to this value.\nFormat: RFC-3339 or YYYY-MM-DD. If missing, all values are returned.\n"
+      },
+      "limit": {
+        "type": "integer",
+        "maximum": 1000.0,
+        "minimum": 1.0,
+        "default": 100,
+        "description": "Number of maximum snapshots to return in a response.\nThe limit applies to the total number of data points, not the number per symbol!\nUse `next_page_token` to fetch the next set of responses.\n"
+      },
+      "page_token": {
+        "type": "string",
+        "description": "The pagination token from which to continue. The value to pass here is returned in specific requests when more data is available, usually because of a response result limit.\n"
+      }
+    },
+    "required": [
+      "symbols"
+    ]
+  }
+}

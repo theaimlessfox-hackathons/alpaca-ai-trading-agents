@@ -1,0 +1,9 @@
+{
+  "name": "get_clock",
+  "description": "Retrieves and formats current market status and next open/close times.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  }
+}
