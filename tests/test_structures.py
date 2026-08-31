@@ -87,3 +87,10 @@ def test_close_limit_uses_conservative_quotes():
     close = close_mleg_payload(open_p, client_order_id="c1", quotes=quotes)
     # buy short at 1.5 ask, sell long at 0.40 bid → debit 1.10
     assert close["limit_price"] == "1.10"
+
+
+def test_close_qty_can_be_overridden():
+    open_p = to_mleg_payload(proposal(), client_order_id="e1", expiration=date(2026, 9, 18))
+    assert open_p["qty"] == "1"
+    close = close_mleg_payload(open_p, client_order_id="c1", qty=2)
+    assert close["qty"] == "2"

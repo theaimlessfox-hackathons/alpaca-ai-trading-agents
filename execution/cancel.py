@@ -28,12 +28,16 @@ def _cancel_outcome(result) -> str:
 
 
 def _mark_cancel_requested(order_id: int, cid: str | None, cur: OrderStatus, *, path: Path) -> None:
+    from storage.logger import log_event
+
+    # An unconfirmed cancel of an already-ambiguous order stays NEEDS_REVIEW.
+    if cur is OrderStatus.NEEDS_REVIEW:
+        log_event("cancel_unconfirmed_stays_review", order_id=order_id, client_order_id=cid)
+        return
     nxt = step_order(cur, OrderStatus.CANCEL_REQUESTED)
     update_order(order_id, status=nxt.value, path=path)
     if cid:
         insert_intent(cid, status=OrderStatus.CANCEL_REQUESTED.value, path=path)
-    from storage.logger import log_event
-
     log_event("cancel_requested", order_id=order_id, client_order_id=cid)
 
 
@@ -139,6 +143,43 @@ def cancel_entry_order(
         path=path,
         cancel_fn=cancel_fn,
     )
+
+
+_NONTERMINAL_ENTRY = {
+    OrderStatus.INTENT.value,
+    OrderStatus.SUBMITTING.value,
+    OrderStatus.WORKING.value,
+    OrderStatus.PARTIALLY_FILLED.value,
+    OrderStatus.CANCEL_REQUESTED.value,
+    OrderStatus.NEEDS_REVIEW.value,
+}
+
+
+def cancel_nonterminal_entries(
+    *,
+    path: Path = DEFAULT_PATH,
+    cancel_fn: Callable[[str], object] | None = None,
+    lookup_fn: Callable[[str], object] | None = None,
+) -> tuple[list[int], list[int]]:
+    """Cancel every entry that can still fill. Returns (resolved, unresolved)."""
+    from storage.ledger import list_orders
+
+    resolved: list[int] = []
+    unresolved: list[int] = []
+    for row in list_orders(path, role="entry"):
+        oid, _sid, _role, st, _cid, _br, _qty, _fq = row
+        if st not in _NONTERMINAL_ENTRY:
+            continue
+        out = cancel_entry_order(oid, path=path, cancel_fn=cancel_fn, lookup_fn=lookup_fn)
+        if out in {
+            OrderStatus.CANCELED.value,
+            OrderStatus.EXPIRED.value,
+            OrderStatus.REJECTED.value,
+        }:
+            resolved.append(oid)
+        else:
+            unresolved.append(oid)
+    return resolved, unresolved
 
 
 def cancel_stale_entries(

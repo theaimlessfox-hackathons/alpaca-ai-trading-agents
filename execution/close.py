@@ -152,7 +152,11 @@ def close_structure(
             quotes = None
 
         try:
-            payload = close_mleg_payload(open_payload, client_order_id=cid, quotes=quotes)
+            open_qty = struct[3]
+            qty = open_qty if open_qty and float(open_qty) > 0 else open_payload.get("qty")
+            payload = close_mleg_payload(
+                open_payload, client_order_id=cid, quotes=quotes, qty=qty
+            )
         except ValueError as exc:
             update_structure(structure_id, status=StructureStatus.NEEDS_REVIEW.value, path=path)
             return FailClosed(str(exc))

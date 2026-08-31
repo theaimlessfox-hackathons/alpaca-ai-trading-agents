@@ -122,6 +122,7 @@ def close_mleg_payload(
     client_order_id: str,
     quotes: dict[str, tuple[float, float]] | None = None,
     limit_price: str | None = None,
+    qty: str | float | int | None = None,
 ) -> dict[str, Any]:
     """Atomic close: flip each leg and reprice as a debit. Never emit a 1-leg payload."""
     legs_in = open_payload.get("legs") or []
@@ -133,6 +134,10 @@ def close_mleg_payload(
         intent = "buy_to_close" if lg.get("side") == "sell" else "sell_to_close"
         legs.append({**lg, "side": side, "position_intent": intent})
     price = limit_price or close_limit_price(open_payload, quotes=quotes)
-    out = {**open_payload, "client_order_id": client_order_id, "legs": legs, "limit_price": price}
+    if qty is None:
+        qty_s = str(open_payload.get("qty") or "1")
+    else:
+        qty_s = str(int(qty)) if float(qty) == int(float(qty)) else str(qty)
+    out = {**open_payload, "client_order_id": client_order_id, "legs": legs, "limit_price": price, "qty": qty_s}
     assert_payload_matches_schema(out)
     return out

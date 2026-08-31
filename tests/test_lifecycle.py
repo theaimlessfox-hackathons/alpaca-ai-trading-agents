@@ -173,12 +173,20 @@ def test_flatten_falls_back_to_stored_entry_payload(tmp_path, monkeypatch):
         role="entry",
         status=OrderStatus.WORKING.value,
         client_order_id="e1",
+        broker_order_id="brk-e1",
         qty=1,
         filled_qty=1,
         payload_json=json.dumps(_payload()),
         path=db,
     )
-    n = flatten_all("kill", payloads={}, path=db, submit_fn=_ok_submit)
+    n = flatten_all(
+        "kill",
+        payloads={},
+        path=db,
+        submit_fn=_ok_submit,
+        lookup_fn=lambda _c: None,
+        cancel_fn=lambda _i: {"status": "canceled"},
+    )
     assert n.submitted == 1
     assert n.complete is True
     from storage.ledger import get_order_by_cid
@@ -535,6 +543,158 @@ def test_active_structures_include_closing_and_needs_review(tmp_path):
         StructureStatus.NEEDS_REVIEW.value,
     }
     assert len(pending_entries(db)) == 1
+
+
+def test_halt_cancels_pending_entry_before_flatten(tmp_path):
+    db = _db(tmp_path)
+    sid = insert_structure("SPY", status=StructureStatus.PENDING_ENTRY.value, path=db)
+    oid = insert_order(
+        structure_id=sid,
+        role="entry",
+        status=OrderStatus.WORKING.value,
+        client_order_id="e-pend-halt",
+        broker_order_id="brk-pend-halt",
+        qty=1,
+        path=db,
+    )
+    seen = {}
+
+    def fake_cancel(order_id):
+        seen["id"] = order_id
+        return {"status": "canceled"}
+
+    n = flatten_all(
+        "kill",
+        payloads={},
+        path=db,
+        submit_fn=_ok_submit,
+        cancel_fn=fake_cancel,
+        lookup_fn=lambda _c: None,
+    )
+    assert seen["id"] == "brk-pend-halt"
+    assert get_order(oid, db)[3] == OrderStatus.CANCELED.value
+    assert get_structure(sid, db)[2] == StructureStatus.VOID.value
+    assert n.canceled == 1
+    assert n.cancel_unresolved == 0
+    assert n.remaining == 0
+    assert n.complete is True
+
+
+def test_halt_incomplete_when_pending_cancel_unconfirmed(tmp_path):
+    db = _db(tmp_path)
+    sid = insert_structure("SPY", status=StructureStatus.PENDING_ENTRY.value, path=db)
+    insert_order(
+        structure_id=sid,
+        role="entry",
+        status=OrderStatus.WORKING.value,
+        client_order_id="e-pend-unc",
+        broker_order_id="brk-pend-unc",
+        qty=1,
+        path=db,
+    )
+    n = flatten_all(
+        "kill",
+        payloads={},
+        path=db,
+        submit_fn=_ok_submit,
+        cancel_fn=lambda _i: {"status": "accepted"},
+        lookup_fn=lambda _c: None,
+    )
+    assert n.complete is False
+    assert n.cancel_unresolved == 1
+    assert get_structure(sid, db)[2] == StructureStatus.PENDING_ENTRY.value
+
+
+def test_halt_cancels_partial_then_flattens_fill(tmp_path):
+    import json
+
+    db = _db(tmp_path)
+    sid = insert_structure("SPY", status=StructureStatus.PENDING_ENTRY.value, path=db)
+    entry = _payload()
+    entry["qty"] = "2"
+    oid = insert_order(
+        structure_id=sid,
+        role="entry",
+        status=OrderStatus.WORKING.value,
+        client_order_id="e-part-halt",
+        broker_order_id="brk-part-halt",
+        qty=2,
+        payload_json=json.dumps(entry),
+        path=db,
+    )
+    apply_broker_fill(oid, filled_qty=1, broker_status="partially_filled", path=db)
+    assert get_structure(sid, db)[2] == StructureStatus.OPEN.value
+    assert get_structure(sid, db)[3] == 1
+    seen = {}
+
+    def submit(payload):
+        seen["payload"] = payload
+        return {"id": "brk-close"}
+
+    n = flatten_all(
+        "kill",
+        payloads={},
+        path=db,
+        submit_fn=submit,
+        cancel_fn=lambda _i: {"status": "canceled"},
+        lookup_fn=lambda _c: None,
+    )
+    assert get_order(oid, db)[3] == OrderStatus.CANCELED.value
+    assert get_structure(sid, db)[2] == StructureStatus.CLOSING.value
+    assert n.canceled == 1
+    assert n.submitted == 1
+    assert n.complete is True
+    assert seen["payload"]["qty"] == "1"
+
+
+def test_halt_needs_review_entry_confirmed_cancel_voids(tmp_path):
+    db = _db(tmp_path)
+    sid = insert_structure("SPY", status=StructureStatus.NEEDS_REVIEW.value, path=db)
+    oid = insert_order(
+        structure_id=sid,
+        role="entry",
+        status=OrderStatus.NEEDS_REVIEW.value,
+        client_order_id="e-nr-halt",
+        broker_order_id="brk-nr-halt",
+        qty=1,
+        path=db,
+    )
+    n = flatten_all(
+        "kill",
+        payloads={},
+        path=db,
+        submit_fn=_ok_submit,
+        cancel_fn=lambda _i: {"status": "canceled"},
+        lookup_fn=lambda _c: None,
+    )
+    assert get_order(oid, db)[3] == OrderStatus.CANCELED.value
+    assert get_structure(sid, db)[2] == StructureStatus.VOID.value
+    assert n.complete is True
+
+
+def test_halt_needs_review_unconfirmed_cancel_stays_review(tmp_path):
+    db = _db(tmp_path)
+    sid = insert_structure("SPY", status=StructureStatus.NEEDS_REVIEW.value, path=db)
+    oid = insert_order(
+        structure_id=sid,
+        role="entry",
+        status=OrderStatus.NEEDS_REVIEW.value,
+        client_order_id="e-nr-unc",
+        broker_order_id="brk-nr-unc",
+        qty=1,
+        path=db,
+    )
+    n = flatten_all(
+        "kill",
+        payloads={},
+        path=db,
+        submit_fn=_ok_submit,
+        cancel_fn=lambda _i: {"status": "accepted"},
+        lookup_fn=lambda _c: None,
+    )
+    assert get_order(oid, db)[3] == OrderStatus.NEEDS_REVIEW.value
+    assert get_structure(sid, db)[2] == StructureStatus.NEEDS_REVIEW.value
+    assert n.complete is False
 
 
 def test_flatten_attempts_needs_review_exposure(tmp_path):

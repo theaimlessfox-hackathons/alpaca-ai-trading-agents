@@ -17,6 +17,8 @@ def snapshot_and_maybe_flatten(
     payloads: dict[int, dict],
     path: Path = DEFAULT_PATH,
     submit_fn=None,
+    cancel_fn=None,
+    lookup_fn=None,
 ) -> str | None:
     create_all(path)
     # Insert today's print first so session SOD is this print, not first-ever
@@ -26,11 +28,25 @@ def snapshot_and_maybe_flatten(
     sod_use = sod_now if sod_now else sod
     start_use = start_now if start_now else start
     if is_killed():
-        result = flatten_all("kill", payloads=payloads, path=path, submit_fn=submit_fn)
+        result = flatten_all(
+            "kill",
+            payloads=payloads,
+            path=path,
+            submit_fn=submit_fn,
+            cancel_fn=cancel_fn,
+            lookup_fn=lookup_fn,
+        )
         return "kill" if result.complete else "kill_flatten_incomplete"
     halted, why = is_halted(equity, sod_use, start_use)
     if halted:
-        result = flatten_all(why or "halt", payloads=payloads, path=path, submit_fn=submit_fn)
+        result = flatten_all(
+            why or "halt",
+            payloads=payloads,
+            path=path,
+            submit_fn=submit_fn,
+            cancel_fn=cancel_fn,
+            lookup_fn=lookup_fn,
+        )
         if result.complete:
             return why
         return f"{why or 'halt'}_flatten_incomplete"

@@ -51,7 +51,7 @@ def apply_broker_fill(
                 sst = step_structure(sst, StructureStatus.OPEN)
             update_structure(sid, status=sst.value, open_qty=filled_qty, path=path)
         elif nxt in {OrderStatus.CANCELED, OrderStatus.EXPIRED, OrderStatus.REJECTED}:
-            if sst is StructureStatus.PENDING_ENTRY:
+            if sst in {StructureStatus.PENDING_ENTRY, StructureStatus.NEEDS_REVIEW}:
                 update_structure(sid, status=step_structure(sst, StructureStatus.VOID).value, open_qty=0, path=path)
     elif role == "close":
         if nxt is OrderStatus.FILLED:

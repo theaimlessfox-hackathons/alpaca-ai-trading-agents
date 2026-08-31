@@ -146,6 +146,7 @@ def run_once(
                 payloads={},
                 path=path,
                 submit_fn=live_submit,
+                lookup_fn=lookup_fn,
             )
             summary["snapshot"] = snap
         summary["blocked"] = True
@@ -159,6 +160,7 @@ def run_once(
         payloads={},
         path=path,
         submit_fn=live_submit,
+        lookup_fn=lookup_fn,
     )
     summary["snapshot"] = snap
     if snap in {"kill", "daily_halt", "total_halt"}:

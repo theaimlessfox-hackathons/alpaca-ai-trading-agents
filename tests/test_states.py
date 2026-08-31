@@ -1,4 +1,5 @@
 from config.states import OrderStatus, StructureStatus, structure_after_entry_order
+from execution.transitions import step_order, step_structure
 
 
 def test_order_status_members():
@@ -42,3 +43,8 @@ def test_cancel_unfilled_voids_structure():
     assert structure_after_entry_order(OrderStatus.CANCELED, 0) is StructureStatus.VOID
     assert structure_after_entry_order(OrderStatus.EXPIRED, 0) is StructureStatus.VOID
     assert structure_after_entry_order(OrderStatus.REJECTED, 0) is StructureStatus.VOID
+
+
+def test_needs_review_can_confirm_cancel_and_void():
+    assert step_order(OrderStatus.NEEDS_REVIEW, OrderStatus.CANCELED) is OrderStatus.CANCELED
+    assert step_structure(StructureStatus.NEEDS_REVIEW, StructureStatus.VOID) is StructureStatus.VOID

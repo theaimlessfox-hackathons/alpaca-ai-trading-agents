@@ -42,6 +42,15 @@ ORDER_OK = {
         OrderStatus.EXPIRED,
         OrderStatus.NEEDS_REVIEW,
     },
+    OrderStatus.NEEDS_REVIEW: {
+        OrderStatus.CANCELED,
+        OrderStatus.EXPIRED,
+        OrderStatus.REJECTED,
+        OrderStatus.FILLED,
+        OrderStatus.PARTIALLY_FILLED,
+        OrderStatus.WORKING,
+        OrderStatus.CANCEL_REQUESTED,
+    },
 }
 
 STRUCT_OK = {
