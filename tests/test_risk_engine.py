@@ -31,6 +31,19 @@ def test_veto_universe():
     assert validate(good_proposal(symbol="NVDA"), book(), Settings()).reason == "universe"
 
 
+def test_discover_mode_allows_optionable_name(monkeypatch):
+    from strategy import universe as uni
+
+    uni.clear_universe_cache()
+    monkeypatch.setattr(uni, "fetch_most_actives", lambda **_k: ["NVDA"])
+    monkeypatch.setattr(uni, "fetch_movers", lambda **_k: [])
+    monkeypatch.setattr(uni, "asset_optionable", lambda sym, **_k: True)
+    monkeypatch.setattr(uni, "last_prices", lambda _syms, **_k: {s: 50.0 for s in _syms})
+    s = Settings(universe_mode="discover", universe_size=4)
+    assert isinstance(validate(good_proposal(symbol="NVDA"), book(), s), Approve)
+    assert validate(good_proposal(symbol="SPY"), book(), s).reason == "universe"
+
+
 def test_veto_dte():
     assert validate(good_proposal(dte=6), book(), Settings()).reason == "dte"
     assert validate(good_proposal(dte=22), book(), Settings()).reason == "dte"

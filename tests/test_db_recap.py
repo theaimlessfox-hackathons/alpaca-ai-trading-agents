@@ -132,6 +132,66 @@ def test_daily_pnl_reads_beyond_recent_window(db_path):
     assert daily_pnl(path=db_path) == 99_500.0 - 100_000.0
 
 
+def test_record_scan_and_latest(db_path):
+    from storage.db import latest_scan, record_scan, trading_session_date
+
+    record_scan(["nvda", "INTC"], path=db_path)
+    record_scan(["NVDA", "PCG"], path=db_path)
+    row = latest_scan(path=db_path)
+    assert row is not None
+    assert row["session_date"] == trading_session_date()
+    assert row["symbols"] == ["NVDA", "PCG"]
+
+
+def test_record_articles_dedupes(db_path):
+    from storage.db import list_articles, record_articles
+
+    n = record_articles(
+        "nvda",
+        [
+            {"headline": "Chip demand", "url": "https://ex/a", "source": "benzinga"},
+            {"headline": "Chip demand", "url": "https://ex/a", "source": "benzinga"},
+            {"headline": "Export rules", "source": "reuters"},
+        ],
+        path=db_path,
+    )
+    assert n == 2
+    rows = list_articles(symbol="NVDA", path=db_path)
+    assert [r["headline"] for r in rows] == ["Export rules", "Chip demand"]
+
+
+def test_trade_blotter_joins_payload(db_path):
+    import json
+
+    from config.states import OrderStatus, StructureStatus
+    from storage.db import list_trade_blotter
+    from storage.ledger import insert_order, insert_structure
+
+    sid = insert_structure("IWM", status=StructureStatus.PENDING_ENTRY.value, path=db_path)
+    insert_order(
+        structure_id=sid,
+        role="entry",
+        status=OrderStatus.WORKING.value,
+        client_order_id="tg-x",
+        qty=1,
+        payload_json=json.dumps(
+            {
+                "limit_price": "-0.43",
+                "legs": [
+                    {"side": "sell", "symbol": "IWM260908C00295000"},
+                    {"side": "buy", "symbol": "IWM260908C00297000"},
+                ],
+            }
+        ),
+        path=db_path,
+    )
+    rows = list_trade_blotter(path=db_path)
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "IWM"
+    assert rows[0]["limit"] == "-0.43"
+    assert "sell IWM260908C00295000" in rows[0]["legs"]
+
+
 def test_recent_cycles_global_is_chronological(db_path):
     insert_cycle("SPY", "veto", "old_spy", path=db_path)
     insert_cycle("QQQ", "approve_dry", "new_qqq", path=db_path)

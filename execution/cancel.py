@@ -27,18 +27,19 @@ def _cancel_outcome(result) -> str:
     return "unconfirmed"
 
 
-def _mark_cancel_requested(order_id: int, cid: str | None, cur: OrderStatus, *, path: Path) -> None:
+def _mark_cancel_requested(order_id: int, cid: str | None, cur: OrderStatus, *, path: Path) -> str:
     from storage.logger import log_event
 
     # An unconfirmed cancel of an already-ambiguous order stays NEEDS_REVIEW.
     if cur is OrderStatus.NEEDS_REVIEW:
         log_event("cancel_unconfirmed_stays_review", order_id=order_id, client_order_id=cid)
-        return
+        return OrderStatus.NEEDS_REVIEW.value
     nxt = step_order(cur, OrderStatus.CANCEL_REQUESTED)
     update_order(order_id, status=nxt.value, path=path)
     if cid:
         insert_intent(cid, status=OrderStatus.CANCEL_REQUESTED.value, path=path)
     log_event("cancel_requested", order_id=order_id, client_order_id=cid)
+    return nxt.value
 
 
 def _lookup_broker_id(cid: str | None, lookup_fn: Callable[[str], object] | None) -> str | None:
@@ -79,8 +80,7 @@ def _cancel_at_broker(
     try:
         result = fn(str(broker_id))
     except Exception:  # noqa: BLE001 - request may have reached Alpaca; do not invent CANCELED
-        _mark_cancel_requested(order_id, cid, cur, path=path)
-        return OrderStatus.CANCEL_REQUESTED.value
+        return _mark_cancel_requested(order_id, cid, cur, path=path)
     outcome = _cancel_outcome(result)
     if outcome == "canceled":
         apply_broker_fill(order_id, filled_qty=filled, broker_status="canceled", path=path)
@@ -89,8 +89,7 @@ def _cancel_at_broker(
             assert struct[2] != "CLOSED"
             assert struct[2] != "CANCELED"
         return OrderStatus.CANCELED.value
-    _mark_cancel_requested(order_id, cid, cur, path=path)
-    return OrderStatus.CANCEL_REQUESTED.value
+    return _mark_cancel_requested(order_id, cid, cur, path=path)
 
 
 def cancel_entry_order(

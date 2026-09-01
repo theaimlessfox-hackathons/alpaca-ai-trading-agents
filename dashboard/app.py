@@ -35,6 +35,17 @@ else:
     latest_equity = equity_rows[0]["equity"] if equity_rows else 100_000.0
     structs = [{"symbol": r[1], "status": r[2], "open_qty": r[3]} for r in open_structures()]
     tiles(latest_equity, daily_pnl(), len(structs), killed)
+    try:
+        from strategy.signals import iter_universe
+
+        names = iter_universe()
+        st.caption(
+            "Scan: "
+            + (", ".join(names) if names else "no names from Alpaca market data")
+            + " · open the Research page for headlines and the blotter"
+        )
+    except Exception:  # noqa: BLE001 - desk must still render if discovery is down
+        st.caption("Scan: market-data discover unavailable")
     if st.button("STOP"):
         set_kill_switch(True)
         st.rerun()

@@ -65,7 +65,9 @@ def computed_max_loss(proposal: ProposalView) -> float:
 
 def validate(proposal: ProposalView, book: PortfolioView, settings=None) -> Approve | Veto:
     s = settings or get_settings()
-    if proposal.symbol not in s.universe:
+    from strategy.signals import filter_symbol
+
+    if filter_symbol(proposal.symbol, s) is None:
         return Veto("universe")
     if proposal.structure != "credit_spread":
         return Veto("structure")

@@ -6,25 +6,49 @@ import os
 import shutil
 import signal
 import subprocess
+import tempfile
 from dataclasses import dataclass
 
 from config.settings import get_settings
 
 
-def _env() -> dict[str, str]:
+def mcp_env(api_key: str | None = None, secret_key: str | None = None) -> dict[str, str]:
+    """Environment shared by every MCP launch path.
+
+    uv/uvx defaults to ``~/.cache/uv``. That directory is read-only on some
+    hosted runners, which used to make account lookup fail before the server
+    started and left the trading loop blocked on ``missing_account_equity``.
+    """
     s = get_settings()
     env = os.environ.copy()
-    key, secret = s.execution_credentials()
+    if api_key is None or secret_key is None:
+        key, secret = s.execution_credentials()
+    else:
+        key, secret = api_key, secret_key
     env["ALPACA_API_KEY"] = key
     env["ALPACA_SECRET_KEY"] = secret
     env["ALPACA_PAPER_TRADE"] = "true"
+    tmp = tempfile.gettempdir()
+    env.setdefault("UV_CACHE_DIR", os.path.join(tmp, "thetagate-uv-cache"))
+    env.setdefault("UV_TOOL_DIR", os.path.join(tmp, "thetagate-uv-tools"))
+    env.setdefault("UV_PYTHON_INSTALL_DIR", os.path.join(tmp, "thetagate-uv-python"))
     return env
+
+
+def _env() -> dict[str, str]:
+    return mcp_env()
+
+
+# Latest alpaca-mcp-server 2.3.1 + unpinned fastmcp 3.4.7 crashes
+# (fastmcp.tools.tool). Pin 3.4.0, which starts and serves the tool surface.
+ALPACA_MCP_SPEC = "alpaca-mcp-server==2.3.1"
+FASTMCP_SPEC = "fastmcp==3.4.0"
 
 
 def command() -> list[str]:
     uvx = shutil.which("uvx")
     if uvx:
-        return [uvx, "alpaca-mcp-server"]
+        return [uvx, "--from", ALPACA_MCP_SPEC, "--with", FASTMCP_SPEC, "alpaca-mcp-server"]
     alpaca = shutil.which("alpaca-mcp-server")
     if alpaca:
         return [alpaca]

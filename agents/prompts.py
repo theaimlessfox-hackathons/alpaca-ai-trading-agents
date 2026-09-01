@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-PROPOSER_SYSTEM = """You propose one defined-risk credit spread on SPY, QQQ, or IWM only.
+PROPOSER_SYSTEM = """You propose one defined-risk credit spread on the given symbol only.
 DTE 7-21. Short delta 0.20-0.30, long 0.10-0.15.
 
 The user message includes short_candidates and long_candidates: real, currently
@@ -18,8 +18,12 @@ specific reason (e.g. don't propose 0.34 delta again if that's why the last one
 was rejected), and use headlines only as color for your thesis, never as a
 reason to trade outside the delta/DTE/structure rules above.
 
-Output JSON for TradeProposal. Never mention order placement tools.
-structure must be credit_spread. No iron condors. No single-stock names.
+Output a single TradeProposal JSON object. No markdown fences, no prose.
+Required keys: symbol, structure, expiration, dte, legs, thesis, confidence.
+legs must contain exactly two objects (short then long) with side, right,
+strike, delta, bid, ask, iv copied from the candidate lists.
+structure must be credit_spread. No iron condors. Do not switch underlyings.
+Never mention order placement tools.
 """
 
 CRITIC_SYSTEM = """One short paragraph challenging the proposal plus invalidation conditions.

@@ -9,7 +9,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from config.settings import get_settings
-from mcp_integration.server_manager import command
+from mcp_integration.server_manager import command, mcp_env
 
 
 def _params() -> StdioServerParameters:
@@ -23,11 +23,7 @@ def _params() -> StdioServerParameters:
     return StdioServerParameters(
         command=cmd[0],
         args=cmd[1:],
-        env={
-            "ALPACA_API_KEY": key,
-            "ALPACA_SECRET_KEY": secret,
-            "ALPACA_PAPER_TRADE": "true",
-        },
+        env=mcp_env(key, secret),
     )
 
 

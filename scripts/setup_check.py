@@ -20,13 +20,13 @@ async def _account_number_with_keys(api_key: str, secret_key: str) -> str | None
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 
-    from mcp_integration.server_manager import command
+    from mcp_integration.server_manager import command, mcp_env
     from tools.research_tools import unwrap
 
     params = StdioServerParameters(
         command=command()[0],
         args=command()[1:],
-        env={"ALPACA_API_KEY": api_key, "ALPACA_SECRET_KEY": secret_key, "ALPACA_PAPER_TRADE": "true"},
+        env=mcp_env(api_key, secret_key),
     )
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -60,7 +60,16 @@ def main() -> int:
         print("FAIL: COMPETE_ENABLED requires EXPECTED_ACCOUNT_ID")
         return 1
     print("ok paper=true role=", s.alpaca_account_role, "compete=", s.compete_enabled)
-    print("universe", s.universe)
+    print("universe_mode", s.universe_mode, "size", s.universe_size)
+    if s.universe_mode == "pinned":
+        print("universe", s.universe)
+    else:
+        try:
+            from strategy.signals import iter_universe
+
+            print("universe", iter_universe(s))
+        except Exception as exc:  # noqa: BLE001 - setup check is diagnostic
+            print("universe_discover_fail", type(exc).__name__, exc)
     failed = False
     if s.alpaca_api_key:
         try:
@@ -150,6 +159,11 @@ def main() -> int:
     print("featherless", "ok" if fw.ok else f"fail ({fw.error})")
     if not fw.ok:
         failed = True
+    if s.xai_fallback:
+        print("xai_fallback", "on", "model=", s.xai_model or "grok-4", "key=", "set" if s.xai_api_key else "missing")
+        if not s.xai_api_key:
+            print("FAIL: XAI_FALLBACK requires XAI_API_KEY")
+            failed = True
     return 1 if failed else 0
 
 

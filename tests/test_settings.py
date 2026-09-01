@@ -13,7 +13,18 @@ def _isolated(**overrides) -> Settings:
         for k in os.environ
         if k.upper().startswith("ALPACA_")
         or k.upper()
-        in {"COMPETE_ENABLED", "EXPECTED_ACCOUNT_ID", "COMPETE_AFTER", "UNIVERSE"}
+        in {
+            "COMPETE_ENABLED",
+            "EXPECTED_ACCOUNT_ID",
+            "COMPETE_AFTER",
+            "UNIVERSE",
+            "XAI_FALLBACK",
+            "XAI_API_KEY",
+            "XAI_MODEL",
+            "XAI_BASE_URL",
+            "UNIVERSE_MODE",
+            "UNIVERSE_SIZE",
+        }
     }
     env = {k: v for k, v in os.environ.items() if k not in drop}
     with patch.dict(os.environ, env, clear=True):
@@ -23,6 +34,9 @@ def _isolated(**overrides) -> Settings:
 def test_universe():
     assert get_settings().universe == ("SPY", "QQQ", "IWM")
     assert _isolated().universe == ("SPY", "QQQ", "IWM")
+    assert _isolated().universe_mode == "discover"
+    assert _isolated(universe_mode="pinned").universe_mode == "pinned"
+    assert _isolated(universe="NVDA,TSLA").universe == ("NVDA", "TSLA")
 
 
 def test_iv_rv_knobs():

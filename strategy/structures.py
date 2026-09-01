@@ -51,6 +51,29 @@ def assert_payload_matches_schema(payload: dict[str, Any]) -> None:
             raise ValueError("ratio_qty must be string")
 
 
+def entry_credit(legs: list) -> float:
+    """Fillable credit for an opening limit, not the mid.
+
+    Mid is what risk uses to decide the trade is good. The natural
+    (short bid − long ask) is what a resting day order can actually print.
+    If the natural is non-positive, give 30% of mid back to the market
+    rather than sit at a price that never fills.
+    """
+    short = next((lg for lg in legs if lg.side == "short"), None)
+    long = next((lg for lg in legs if lg.side == "long"), None)
+    mid = credit(list(legs))
+    if short is not None and long is not None:
+        try:
+            natural = float(short.bid) - float(long.ask)
+        except (TypeError, ValueError):
+            natural = None
+        if natural is not None and natural > 0:
+            return natural
+    if mid > 0:
+        return mid * 0.70
+    return mid
+
+
 def to_mleg_payload(
     proposal: ProposalView,
     *,
@@ -76,7 +99,7 @@ def to_mleg_payload(
                 "position_intent": "sell_to_open" if lg.side == "short" else "buy_to_open",
             }
         )
-    net = credit(proposal.legs)
+    net = entry_credit(proposal.legs)
     # live schema: positive = debit, negative = credit
     payload = {
         "qty": str(proposal.qty),
@@ -137,7 +160,8 @@ def close_mleg_payload(
     if qty is None:
         qty_s = str(open_payload.get("qty") or "1")
     else:
-        qty_s = str(int(qty)) if float(qty) == int(float(qty)) else str(qty)
+        qty_f = float(qty)
+        qty_s = str(int(qty_f)) if qty_f == int(qty_f) else str(qty_f)
     out = {**open_payload, "client_order_id": client_order_id, "legs": legs, "limit_price": price, "qty": qty_s}
     assert_payload_matches_schema(out)
     return out

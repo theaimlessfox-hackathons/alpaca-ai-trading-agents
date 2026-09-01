@@ -359,6 +359,28 @@ def test_first_session_print_is_sod_not_first_ever(tmp_path):
     assert why is None
 
 
+def test_research_boards_render_without_st_table():
+    from dashboard.components import article_board, blotter_board, scan_board, table_markdown
+
+    scan_text = table_markdown([{"#": 1, "symbol": "NVDA"}])
+    assert "NVDA" in scan_text
+    assert callable(scan_board) and callable(article_board) and callable(blotter_board)
+
+
+def test_dashboard_table_markdown_skips_json_blobs():
+    from dashboard.components import table_markdown
+
+    text = table_markdown(
+        [
+            {"id": 2, "symbol": "QQQ", "verdict": "approve_dry", "proposal_json": "{}"},
+            {"id": 1, "symbol": "SPY", "verdict": "veto", "reason": "dte"},
+        ]
+    )
+    assert "proposal_json" not in text
+    assert "QQQ" in text and "SPY" in text
+    assert text.splitlines()[0].startswith("|")
+
+
 def test_net_mark_from_quotes():
     from execution.marks import net_mark
 

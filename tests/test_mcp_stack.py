@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from mcp_integration.client import McpClient
-from mcp_integration.server_manager import command
+from mcp_integration.server_manager import command, mcp_env
 from tools.schema_introspect import main as introspect_main
 
 
@@ -33,6 +33,17 @@ def test_command_uses_uvx_or_binary():
     cmd = command()
     assert cmd
     assert "alpaca-mcp-server" in " ".join(cmd)
+
+
+def test_mcp_env_uses_writable_uv_cache(monkeypatch, tmp_path):
+    monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    env = mcp_env("paper-key", "paper-secret")
+    assert env["UV_CACHE_DIR"] == str(tmp_path / "thetagate-uv-cache")
+    assert env["UV_TOOL_DIR"] == str(tmp_path / "thetagate-uv-tools")
+    assert env["UV_PYTHON_INSTALL_DIR"] == str(tmp_path / "thetagate-uv-python")
+    assert env["ALPACA_PAPER_TRADE"] == "true"
+    assert env["ALPACA_API_KEY"] == "paper-key"
 
 
 def test_introspect_missing_key(monkeypatch):

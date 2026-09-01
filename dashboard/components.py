@@ -4,6 +4,40 @@ import json
 
 import streamlit as st
 
+_TABLE_SKIP = {"proposal_json", "critic_json"}
+
+
+def _cell(value: object) -> str:
+    text = "" if value is None else str(value)
+    return text.replace("|", "\\|").replace("\n", " ")
+
+
+def table_markdown(rows: list[dict]) -> str:
+    keys: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in _TABLE_SKIP and key not in keys:
+                keys.append(key)
+    if not keys:
+        return ""
+    header = "| " + " | ".join(keys) + " |"
+    sep = "| " + " | ".join("---" for _ in keys) + " |"
+    body = [
+        "| " + " | ".join(_cell(row.get(key)) for key in keys) + " |"
+        for row in rows
+    ]
+    return "\n".join([header, sep, *body])
+
+
+def markdown_table(rows: list[dict]) -> None:
+    """Render a markdown table. Avoids st.table/st.dataframe so a broken
+    local numpy/pyarrow stack cannot take down the desk."""
+    text = table_markdown(rows)
+    if not text:
+        st.info("No columns to show.")
+        return
+    st.markdown(text)
+
 
 def banner() -> None:
     st.markdown("### PAPER TRADING")
@@ -20,16 +54,19 @@ def tiles(equity: float, daily_pnl: float, open_n: int, killed: bool) -> None:
 
 def curve(points: list[float]) -> None:
     st.subheader("Equity")
-    if points:
-        st.line_chart(points)
-    else:
+    if not points:
         st.info("No equity history yet.")
+        return
+    try:
+        st.line_chart(points)
+    except Exception:  # noqa: BLE001 - numpy/pyarrow breakage must not blank the desk
+        st.text(" → ".join(f"{p:,.0f}" for p in points[-12:]))
 
 
 def positions(rows: list[dict]) -> None:
     st.subheader("Positions")
     if rows:
-        st.table(rows)
+        markdown_table(rows)
     else:
         st.info("No open structures.")
 
@@ -37,7 +74,7 @@ def positions(rows: list[dict]) -> None:
 def history(rows: list[dict]) -> None:
     st.subheader("Trade history")
     if rows:
-        st.table(rows)
+        markdown_table(rows)
     else:
         st.info("No cycles yet.")
 
@@ -75,3 +112,39 @@ def activity(lines: list[str]) -> None:
     st.subheader("Activity")
     for line in lines or ["quiet"]:
         st.text(line)
+
+
+def scan_board(scan: dict | None, fallback: list[str] | None = None) -> None:
+    st.subheader("Today's scan")
+    symbols = (scan or {}).get("symbols") or list(fallback or [])
+    if not symbols:
+        st.info("No scan stored for this session yet.")
+        return
+    if scan and scan.get("ts"):
+        st.caption(f"Session {scan.get('session_date')} · selected {scan.get('ts')}")
+    markdown_table([{"#": i + 1, "symbol": sym} for i, sym in enumerate(symbols)])
+
+
+def article_board(rows: list[dict]) -> None:
+    st.subheader("Articles used")
+    if not rows:
+        st.info("No headlines stored for today's scan yet.")
+        return
+    shown = [
+        {
+            "symbol": r.get("symbol"),
+            "source": r.get("source") or "",
+            "headline": r.get("headline"),
+            "url": r.get("url") or "",
+        }
+        for r in rows
+    ]
+    markdown_table(shown)
+
+
+def blotter_board(rows: list[dict]) -> None:
+    st.subheader("Trade blotter")
+    if not rows:
+        st.info("No paper tickets yet.")
+        return
+    markdown_table(rows)

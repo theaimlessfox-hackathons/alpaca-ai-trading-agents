@@ -64,21 +64,20 @@ def run_cycle(
         try:
             import asyncio
 
+            from storage.db import record_articles
+            from tools.news_parse import news_items
             from tools.research_tools import get_news
 
             # get_news's live response shape is unverified (unlike get_option_chain/
             # get_stock_bars, which were confirmed against a real call) -- defensive
             # about the key name for the same reason strategy/chain.py is.
             raw = asyncio.run(get_news(sym))
-            items = raw.get("news", raw) if isinstance(raw, dict) else raw
-            headlines = []
-            for a in items or []:
-                if not isinstance(a, dict):
-                    continue
-                text = a.get("headline") or a.get("title") or a.get("summary")
-                if text:
-                    headlines.append(str(text))
-            return headlines[:5]
+            items = news_items(raw)
+            try:
+                record_articles(sym, items)
+            except Exception:  # noqa: BLE001 - research log must not block a cycle
+                pass
+            return [row["headline"] for row in items]
         except Exception:  # noqa: BLE001 - news is color, not a gate; never blocks a cycle
             return []
 

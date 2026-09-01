@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from agents.llm import smoke
-from agents.proposer import run_proposer
+from agents.proposer import _context_to_user, run_proposer
 from agents.schemas import TradeProposal
 from config.settings import get_settings
 
@@ -37,6 +37,49 @@ def test_proposer_from_prefetched_context():
 
 def test_proposer_parse_fail_returns_none():
     assert run_proposer("SPY", {}, chat_fn=lambda _m: "not-json") is None
+
+
+def test_prompt_excludes_all_banded_non_candidate_pool():
+    text = _context_to_user(
+        "SPY",
+        {
+            "iv_rv": 1.4,
+            "short_candidates": [{"symbol": "SHORT"}],
+            "long_candidates": [{"symbol": "LONG"}],
+            "all_banded": [{"symbol": "ATM-ONLY"}],
+        },
+    )
+    assert "SHORT" in text and "LONG" in text
+    assert "all_banded" not in text and "ATM-ONLY" not in text
+
+
+def test_proposer_fails_over_to_xai_after_invalid_schema(monkeypatch):
+    monkeypatch.setenv("XAI_FALLBACK", "true")
+    monkeypatch.setenv("XAI_API_KEY", "fake-xai")
+    get_settings.cache_clear()
+    monkeypatch.setattr("agents.llm.chat", lambda *_a, **_k: json.dumps({"ok": True}))
+    monkeypatch.setattr("agents.llm._xai_chat", lambda *_a, **_k: json.dumps(VALID))
+    p = run_proposer("SPY", {"atm_iv": 0.22, "rv_20": 0.12})
+    assert isinstance(p, TradeProposal)
+    assert p.symbol == "SPY"
+
+
+def test_proposer_does_not_call_xai_when_fallback_off(monkeypatch):
+    monkeypatch.setenv("XAI_FALLBACK", "false")
+    get_settings.cache_clear()
+    calls = {"n": 0}
+
+    def fake_chat(*_a, **_k):
+        calls["n"] += 1
+        return json.dumps({"ok": True})
+
+    def boom(*_a, **_k):
+        raise AssertionError("must not call xAI when fallback is disabled")
+
+    monkeypatch.setattr("agents.llm.chat", fake_chat)
+    monkeypatch.setattr("agents.llm._xai_chat", boom)
+    assert run_proposer("SPY", {}) is None
+    assert calls["n"] == 3
 
 
 def test_no_execution_imports():

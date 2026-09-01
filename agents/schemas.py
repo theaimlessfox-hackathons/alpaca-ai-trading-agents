@@ -42,13 +42,50 @@ class CriticNote(BaseModel):
     invalidation: list[str]
 
 
+def extract_json_value(raw: Any) -> Any:
+    """Parse a JSON value out of model text.
+
+    Accepts a bare object, a ```json fence, or the first {...} block inside prose.
+    """
+    if not isinstance(raw, str):
+        return raw
+    text = raw.strip()
+    if not text:
+        raise json.JSONDecodeError("empty", raw, 0)
+    if text.startswith("```"):
+        lines = text.splitlines()[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end <= start:
+            raise
+        return json.loads(text[start : end + 1])
+
+
+def _as_proposal_data(data: Any) -> Any:
+    if not isinstance(data, dict):
+        return data
+    if "symbol" in data and "legs" in data:
+        return data
+    for key in ("proposal", "trade", "data", "result"):
+        inner = data.get(key)
+        if isinstance(inner, dict) and "symbol" in inner:
+            return inner
+    return data
+
+
 def parse_and_retry(call_fn: Callable[[str | None], str], *, attempts: int = 3) -> TradeProposal | None:
     err: str | None = None
     for _ in range(attempts):
         raw = call_fn(err)
         try:
-            data: Any = json.loads(raw) if isinstance(raw, str) else raw
+            data = _as_proposal_data(extract_json_value(raw))
             return TradeProposal.model_validate(data)
-        except (json.JSONDecodeError, ValidationError) as exc:
+        except (json.JSONDecodeError, ValidationError, TypeError) as exc:
             err = str(exc)
     return None

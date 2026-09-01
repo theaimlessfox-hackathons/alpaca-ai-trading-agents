@@ -29,6 +29,25 @@ def universe() -> list[str]:
     return list(iter_universe())
 
 
+def _prefetch_scan_articles(symbols: list[str], path: Path) -> None:
+    """Best-effort headlines for today's scan so the Research page is not empty
+    when a name stands down before the proposer runs."""
+    try:
+        import asyncio
+
+        from storage.db import record_articles
+        from tools.news_parse import news_items
+        from tools.research_tools import get_news
+    except Exception:  # noqa: BLE001
+        return
+    for sym in symbols:
+        try:
+            raw = asyncio.run(get_news(sym))
+            record_articles(sym, news_items(raw), path=path)
+        except Exception:  # noqa: BLE001 - one name must not kill the pass
+            continue
+
+
 def fetch_account_equity() -> float | None:
     try:
         import asyncio
@@ -119,6 +138,15 @@ def run_once(
         "reconciled": 0,
         "exits": [],
     }
+    try:
+        from storage.db import record_scan
+
+        record_scan(symbols, path=path)
+    except Exception:  # noqa: BLE001 - research log must not block a cycle
+        pass
+    # Live path only: unit tests inject cycle_fn and must not hit Alpaca news.
+    if cycle_fn is None and not skip_agent:
+        _prefetch_scan_articles(symbols, path=path)
 
     rec = recover_startup(path=path, lookup_fn=lookup_fn)
     if rec == "block_startup":
@@ -279,7 +307,17 @@ def main() -> int:
     while True:
         if is_killed() or is_market_open():
             summary = run_once(live=args.live)
-            print("cycle", summary.get("candidates"), "blocked", summary.get("blocked"), "snap", summary.get("snapshot"))
+            print(
+                "cycle",
+                summary.get("candidates"),
+                "blocked",
+                summary.get("blocked"),
+                "snap",
+                summary.get("snapshot"),
+                "results",
+                summary.get("results"),
+                flush=True,
+            )
             time.sleep(60 if is_killed() or not is_market_open() else s.cycle_minutes * 60)
         else:
             time.sleep(60)

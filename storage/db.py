@@ -59,6 +59,21 @@ CREATE TABLE IF NOT EXISTS decisions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   payload TEXT
 );
+CREATE TABLE IF NOT EXISTS scans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_date TEXT NOT NULL,
+  symbols_json TEXT NOT NULL,
+  ts TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS articles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_date TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  headline TEXT NOT NULL,
+  url TEXT,
+  source TEXT,
+  ts TEXT NOT NULL
+);
 """
 
 
@@ -91,6 +106,25 @@ def create_all(path: Path = DEFAULT_PATH) -> None:
         con.execute("ALTER TABLE intents ADD COLUMN payload_json TEXT")
     if "structure_id" not in intent_cols:
         con.execute("ALTER TABLE intents ADD COLUMN structure_id INTEGER")
+    con.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS scans (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_date TEXT NOT NULL,
+          symbols_json TEXT NOT NULL,
+          ts TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS articles (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_date TEXT NOT NULL,
+          symbol TEXT NOT NULL,
+          headline TEXT NOT NULL,
+          url TEXT,
+          source TEXT,
+          ts TEXT NOT NULL
+        );
+        """
+    )
     con.commit()
     con.close()
 
@@ -290,3 +324,163 @@ def recent_cycles(symbol: str | None = None, limit: int = 5, path: Path = DEFAUL
         }
         for r in rows
     ]
+
+
+def record_scan(symbols: list[str], path: Path = DEFAULT_PATH) -> int:
+    """Append today's discovered scan. Empty list is stored so the page can
+    show a failed discover instead of inventing yesterday's names."""
+    create_all(path)
+    now = datetime.now(timezone.utc)
+    day = trading_session_date(now) or now.date().isoformat()
+    import json
+
+    con = connect(path)
+    cur = con.execute(
+        "INSERT INTO scans(session_date, symbols_json, ts) VALUES (?,?,?)",
+        (day, json.dumps([str(s).upper() for s in symbols]), now.isoformat()),
+    )
+    con.commit()
+    sid = int(cur.lastrowid)
+    con.close()
+    return sid
+
+
+def latest_scan(session_date: str | None = None, path: Path = DEFAULT_PATH) -> dict | None:
+    create_all(path)
+    day = session_date or trading_session_date()
+    con = connect(path)
+    row = con.execute(
+        "SELECT id, session_date, symbols_json, ts FROM scans "
+        "WHERE session_date=? ORDER BY id DESC LIMIT 1",
+        (day,),
+    ).fetchone()
+    con.close()
+    if not row:
+        return None
+    import json
+
+    try:
+        symbols = json.loads(row[2] or "[]")
+    except (json.JSONDecodeError, TypeError):
+        symbols = []
+    if not isinstance(symbols, list):
+        symbols = []
+    return {"id": row[0], "session_date": row[1], "symbols": [str(s) for s in symbols], "ts": row[3]}
+
+
+def record_articles(symbol: str, items: list[dict], path: Path = DEFAULT_PATH) -> int:
+    """Insert today's headlines for a symbol. Dedupes on (day, symbol, headline)."""
+    create_all(path)
+    now = datetime.now(timezone.utc)
+    day = trading_session_date(now) or now.date().isoformat()
+    written = 0
+    con = connect(path)
+    for item in items:
+        headline = str(item.get("headline") or "").strip()
+        if not headline:
+            continue
+        exists = con.execute(
+            "SELECT 1 FROM articles WHERE session_date=? AND symbol=? AND headline=?",
+            (day, symbol.upper(), headline),
+        ).fetchone()
+        if exists:
+            continue
+        con.execute(
+            "INSERT INTO articles(session_date, symbol, headline, url, source, ts) VALUES (?,?,?,?,?,?)",
+            (
+                day,
+                symbol.upper(),
+                headline,
+                (str(item.get("url")) if item.get("url") else None),
+                (str(item.get("source")) if item.get("source") else None),
+                now.isoformat(),
+            ),
+        )
+        written += 1
+    con.commit()
+    con.close()
+    return written
+
+
+def list_articles(
+    session_date: str | None = None,
+    symbol: str | None = None,
+    path: Path = DEFAULT_PATH,
+) -> list[dict]:
+    create_all(path)
+    day = session_date or trading_session_date()
+    con = connect(path)
+    if symbol:
+        rows = con.execute(
+            "SELECT id, session_date, symbol, headline, url, source, ts FROM articles "
+            "WHERE session_date=? AND symbol=? ORDER BY id DESC",
+            (day, symbol.upper()),
+        ).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT id, session_date, symbol, headline, url, source, ts FROM articles "
+            "WHERE session_date=? ORDER BY symbol ASC, id DESC",
+            (day,),
+        ).fetchall()
+    con.close()
+    return [
+        {
+            "id": r[0],
+            "session_date": r[1],
+            "symbol": r[2],
+            "headline": r[3],
+            "url": r[4],
+            "source": r[5],
+            "ts": r[6],
+        }
+        for r in rows
+    ]
+
+
+def list_trade_blotter(limit: int = 50, path: Path = DEFAULT_PATH) -> list[dict]:
+    """Older and current broker tickets, newest first. Joins structure symbol."""
+    create_all(path)
+    import json
+
+    con = connect(path)
+    rows = con.execute(
+        "SELECT o.id, o.structure_id, o.role, o.status, o.client_order_id, o.broker_order_id, "
+        "o.qty, o.filled_qty, o.payload_json, o.created_ts, s.symbol, s.status "
+        "FROM orders o LEFT JOIN structures s ON s.id = o.structure_id "
+        "ORDER BY o.id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    con.close()
+    out: list[dict] = []
+    for r in rows:
+        payload: dict = {}
+        if r[8]:
+            try:
+                parsed = json.loads(r[8])
+                if isinstance(parsed, dict):
+                    payload = parsed
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+        legs = payload.get("legs") or []
+        leg_txt = " / ".join(
+            f"{lg.get('side', '')} {lg.get('symbol', '')}".strip()
+            for lg in legs
+            if isinstance(lg, dict)
+        )
+        out.append(
+            {
+                "id": r[0],
+                "when": r[9],
+                "symbol": r[10],
+                "role": r[2],
+                "order": r[3],
+                "structure": r[11],
+                "qty": r[6],
+                "filled": r[7],
+                "limit": payload.get("limit_price"),
+                "legs": leg_txt,
+                "client_order_id": r[4],
+                "broker_order_id": r[5],
+            }
+        )
+    return out

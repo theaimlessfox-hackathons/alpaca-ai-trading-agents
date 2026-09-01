@@ -35,6 +35,27 @@ def test_two_legs_match_live_schema():
         assert isinstance(lg["ratio_qty"], str)
         assert len(lg["symbol"]) == 18  # SPY + YYMMDD + C/P + 8-digit strike, unpadded
     assert p["limit_price"].startswith("-")  # credit
+    # natural = short bid 1.4 − long ask 0.54 = 0.86, not mid 1.00
+    assert p["limit_price"] == "-0.86"
+
+
+def test_entry_credit_uses_natural_then_mid_haircut():
+    from strategy.structures import entry_credit
+
+    legs = proposal().legs
+    assert abs(entry_credit(legs) - 0.86) < 1e-9
+    crossed = [
+        Leg("short", "put", 500, 0.25, 0.40, 0.60, 0.18),
+        Leg("long", "put", 495, 0.12, 0.46, 0.54, 0.20),
+    ]
+    # natural 0.40-0.54 < 0; mid = 0.50-0.50 = 0 → 0
+    assert entry_credit(crossed) == 0.0
+    wide_mid = [
+        Leg("short", "put", 500, 0.25, 0.90, 1.50, 0.18),
+        Leg("long", "put", 495, 0.12, 0.40, 1.00, 0.20),
+    ]
+    # natural 0.90-1.00 < 0; mid = 1.20-0.70 = 0.50 → 0.35
+    assert abs(entry_credit(wide_mid) - 0.35) < 1e-9
 
 
 def test_reject_condor():
@@ -94,3 +115,9 @@ def test_close_qty_can_be_overridden():
     assert open_p["qty"] == "1"
     close = close_mleg_payload(open_p, client_order_id="c1", qty=2)
     assert close["qty"] == "2"
+
+
+def test_close_qty_accepts_whole_number_decimal_string():
+    open_p = to_mleg_payload(proposal(), client_order_id="e1", expiration=date(2026, 9, 18))
+    close = close_mleg_payload(open_p, client_order_id="c1", qty="1.0")
+    assert close["qty"] == "1"

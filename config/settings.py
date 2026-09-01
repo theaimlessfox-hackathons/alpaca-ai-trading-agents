@@ -6,7 +6,9 @@ from functools import lru_cache
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-LOCKED_UNIVERSE = ("SPY", "QQQ", "IWM")
+# Pin-list only. Discover mode ignores this and reads Alpaca market data.
+PINNED_UNIVERSE = ("SPY", "QQQ", "IWM")
+LOCKED_UNIVERSE = PINNED_UNIVERSE  # back-compat alias for tests/docs
 
 
 def parse_compete_after(raw: str) -> datetime | None:
@@ -46,14 +48,22 @@ class Settings(BaseSettings):
 
     featherless_api_key: str = ""
     featherless_base_url: str = "https://api.featherless.ai/v1"
+    featherless_url: str = ""  # some .env files export FEATHERLESS_URL
     featherless_model: str = ""
     use_anthropic_fallback: bool = False
     anthropic_api_key: str = ""
 
+    xai_api_key: str = ""
+    xai_model: str = ""
+    xai_base_url: str = "https://api.x.ai/v1"
+    xai_fallback: bool = False
+
     fallback_mleg: bool = False
     entry_timeout_minutes: int = 30
 
-    universe: tuple[str, ...] = LOCKED_UNIVERSE
+    universe_mode: str = "discover"  # discover | pinned
+    universe_size: int = 6
+    universe: tuple[str, ...] = PINNED_UNIVERSE
     dte_min: int = 7
     dte_max: int = 21
     short_delta_min: float = 0.20
@@ -84,6 +94,9 @@ class Settings(BaseSettings):
 
     def resolved_api_key(self) -> str:
         return self.alpaca_api_key or self.alpaca_key
+
+    def resolved_featherless_base_url(self) -> str:
+        return self.featherless_base_url or self.featherless_url or "https://api.featherless.ai/v1"
 
     def competing(self) -> bool:
         return self.alpaca_account_role == "competition" or self.compete_enabled
@@ -123,10 +136,23 @@ class Settings(BaseSettings):
             raise ValueError("live trading is not allowed")
         return True
 
+    @field_validator("universe_mode")
+    @classmethod
+    def mode_ok(cls, v: str) -> str:
+        mode = (v or "discover").strip().lower()
+        if mode not in {"discover", "pinned"}:
+            raise ValueError("UNIVERSE_MODE must be discover or pinned")
+        return mode
+
     @field_validator("universe", mode="before")
     @classmethod
-    def universe_locked(cls, v: object) -> tuple[str, ...]:
-        return LOCKED_UNIVERSE
+    def parse_universe(cls, v: object) -> tuple[str, ...]:
+        if v is None or v == "":
+            return PINNED_UNIVERSE
+        if isinstance(v, str):
+            parts = tuple(s.strip().upper() for s in v.split(",") if s.strip())
+            return parts or PINNED_UNIVERSE
+        return tuple(str(x).strip().upper() for x in v)  # type: ignore[arg-type]
 
     @field_validator("alpaca_account_role")
     @classmethod

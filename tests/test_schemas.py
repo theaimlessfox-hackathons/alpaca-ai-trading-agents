@@ -55,3 +55,18 @@ def test_retry_success():
 
     p = parse_and_retry(fn)
     assert p is not None and n["i"] == 2
+
+
+def test_retry_accepts_fenced_json():
+    p = parse_and_retry(lambda _err: "```json\n" + json.dumps(VALID) + "\n```")
+    assert p is not None and p.symbol == "SPY"
+
+
+def test_retry_accepts_prose_wrapped_json():
+    p = parse_and_retry(lambda _err: "Sure, here you go:\n" + json.dumps(VALID) + "\nGood luck.")
+    assert p is not None and p.symbol == "SPY"
+
+
+def test_retry_unwraps_nested_proposal():
+    p = parse_and_retry(lambda _err: json.dumps({"proposal": VALID}))
+    assert p is not None and p.symbol == "SPY"

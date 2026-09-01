@@ -697,6 +697,24 @@ def test_halt_needs_review_unconfirmed_cancel_stays_review(tmp_path):
     assert n.complete is False
 
 
+def test_cancel_needs_review_unconfirmed_return_matches_persisted_status(tmp_path):
+    """cancel_entry_order's return value must reflect the order row it wrote,
+    not a hardcoded CANCEL_REQUESTED that never got persisted."""
+    db = _db(tmp_path)
+    sid = insert_structure("SPY", status=StructureStatus.NEEDS_REVIEW.value, path=db)
+    oid = insert_order(
+        structure_id=sid,
+        role="entry",
+        status=OrderStatus.NEEDS_REVIEW.value,
+        client_order_id="e-nr-ret",
+        broker_order_id="brk-nr-ret",
+        qty=1,
+        path=db,
+    )
+    out = cancel_entry_order(oid, path=db, cancel_fn=lambda _i: {"status": "accepted"})
+    assert out == get_order(oid, db)[3] == OrderStatus.NEEDS_REVIEW.value
+
+
 def test_flatten_attempts_needs_review_exposure(tmp_path):
     db = _db(tmp_path)
     sid = insert_structure("SPY", status=StructureStatus.NEEDS_REVIEW.value, open_qty=1, path=db)

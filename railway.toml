@@ -2,5 +2,5 @@
 builder = "NIXPACKS"
 
 [deploy]
-startCommand = "streamlit run dashboard/app.py --server.port $PORT --server.address 0.0.0.0"
+startCommand = "python3 scripts/start_service.py"
 restartPolicyType = "ON_FAILURE"
