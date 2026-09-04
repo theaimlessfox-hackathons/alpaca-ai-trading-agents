@@ -1,8 +1,9 @@
-"""Build the cycle universe from Alpaca market data — not a hardcoded watchlist.
+"""Build a daily watchlist from Alpaca market data — not a hardcoded list.
 
-Most-actives and movers come from the Market Data screener. Each name is then
-checked on the trading API for an active, tradable, options-enabled asset.
-Discovery failure is empty (fail closed), never SPY/QQQ/IWM.
+Most-actives and movers form the candidate pool. Recent Alpaca news then boosts
+names with a current catalyst. Every result is checked on the trading API for
+an active, tradable, options-enabled asset. Discovery failure is empty (fail
+closed), never SPY/QQQ/IWM.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import httpx
 from config.settings import get_settings
 
 DATA_HOST = "https://data.alpaca.markets"
-_CACHE: dict[str, Any] = {"ts": 0.0, "symbols": []}
+_CACHE: dict[str, Any] = {"ts": 0.0, "symbols": [], "news": {}}
 _CACHE_TTL_S = 300.0
 _MIN_PRICE = 10.0
 _LEVERED = (
@@ -66,6 +67,24 @@ def fetch_movers(*, top: int = 10, client: httpx.Client | None = None) -> list[s
     for key in ("gainers", "losers"):
         out.extend(_symbols_from_rows(data.get(key) or []))
     return out
+
+
+def fetch_market_news(
+    symbols: list[str], *, limit: int = 50, client: httpx.Client | None = None
+) -> list[dict[str, Any]]:
+    """Recent Alpaca news for the candidate pool in one read-only request."""
+    if not symbols:
+        return []
+    http = client or httpx.Client(timeout=15.0)
+    resp = http.get(
+        f"{DATA_HOST}/v1beta1/news",
+        params={"symbols": ",".join(symbols), "limit": min(max(limit, 1), 50), "sort": "desc"},
+        headers=_headers(),
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    rows = data.get("news", data) if isinstance(data, dict) else data
+    return [row for row in rows or [] if isinstance(row, dict)]
 
 
 def _symbols_from_rows(rows: Any) -> list[str]:
@@ -165,6 +184,52 @@ def rank_candidates(actives: list[str], movers: list[str]) -> list[str]:
     return ranked
 
 
+def rank_with_news(
+    eligible: list[str],
+    actives: list[str],
+    movers: list[str],
+    articles: list[dict[str, Any]],
+) -> list[str]:
+    """Rank attention, not direction, using only Alpaca-derived evidence.
+
+    Activity supplies the base rank. Movers receive more weight and up to five
+    recent articles add a bounded catalyst boost. News never makes an ineligible
+    symbol tradable and is not interpreted as bullish or bearish.
+    """
+    active_rank = {sym.upper(): i for i, sym in enumerate(actives)}
+    mover_rank = {sym.upper(): i for i, sym in enumerate(movers)}
+    news_count = {sym: 0 for sym in eligible}
+    for article in articles:
+        symbols = article.get("symbols") or []
+        if isinstance(symbols, str):
+            symbols = [symbols]
+        for raw in symbols if isinstance(symbols, list) else []:
+            sym = str(raw).upper()
+            if sym in news_count:
+                news_count[sym] += 1
+
+    def score(sym: str) -> tuple[int, int]:
+        activity = max(0, 40 - active_rank[sym]) if sym in active_rank else 0
+        movement = 2 * max(0, 20 - mover_rank[sym]) if sym in mover_rank else 0
+        catalyst = 8 * min(news_count.get(sym, 0), 5)
+        # Earlier eligibility order is the deterministic final tie-breaker.
+        return activity + movement + catalyst, -eligible.index(sym)
+
+    return sorted(eligible, key=score, reverse=True)
+
+
+def cached_news_items(symbol: str) -> list[dict[str, str]]:
+    """Normalized headlines captured while building the current watchlist."""
+    return list((_CACHE.get("news") or {}).get(symbol.upper(), []))
+
+
+def set_session_universe(symbols: list[str]) -> None:
+    """Restore a persisted daily watchlist into this process's validation cache."""
+    _CACHE["ts"] = time.time()
+    _CACHE["symbols"] = [str(symbol).upper() for symbol in symbols]
+    _CACHE["news"] = {}
+
+
 def discover_universe(
     *,
     limit: int | None = None,
@@ -174,6 +239,7 @@ def discover_universe(
     fetch_movers_fn: Callable[[], list[str]] | None = None,
     optionable_fn: Callable[[str], bool] | None = None,
     prices_fn: Callable[[list[str]], dict[str, float]] | None = None,
+    news_fn: Callable[[list[str]], list[dict[str, Any]]] | None = None,
 ) -> list[str]:
     s = get_settings()
     cap = limit if limit is not None else s.universe_size
@@ -193,22 +259,45 @@ def discover_universe(
             prices = get_px(ranked[:40])
         except Exception:  # noqa: BLE001 - missing prints must not invent a universe
             prices = {}
-        picked: list[str] = []
+        eligible: list[str] = []
+        pool_size = min(40, max(20, cap * 2))
         for sym in ranked:
             if prices and prices.get(sym, 0) < _MIN_PRICE:
                 continue
             if check(sym):
-                picked.append(sym)
-            if len(picked) >= cap:
+                eligible.append(sym)
+            if len(eligible) >= pool_size:
                 break
+        try:
+            get_news = news_fn if news_fn is not None else fetch_market_news
+            articles = get_news(eligible)
+        except Exception:  # noqa: BLE001 - activity rank remains a safe fallback
+            articles = []
+        picked = rank_with_news(eligible, actives, movers, articles)[:cap]
+
+        from tools.news_parse import news_items
+
+        by_symbol: dict[str, list[dict[str, str]]] = {}
+        for sym in picked:
+            rows = []
+            for article in articles:
+                article_symbols = article.get("symbols") or []
+                if isinstance(article_symbols, str):
+                    article_symbols = [article_symbols]
+                if sym in {str(item).upper() for item in article_symbols}:
+                    rows.append(article)
+            by_symbol[sym] = news_items({"news": rows}, limit=5)
     except Exception:  # noqa: BLE001 - empty universe is the fail-closed outcome
         picked = []
+        by_symbol = {}
 
     _CACHE["ts"] = ts
     _CACHE["symbols"] = list(picked)
+    _CACHE["news"] = by_symbol
     return list(picked)
 
 
 def clear_universe_cache() -> None:
     _CACHE["ts"] = 0.0
     _CACHE["symbols"] = []
+    _CACHE["news"] = {}

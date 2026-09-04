@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     entry_timeout_minutes: int = 30
 
     universe_mode: str = "discover"  # discover | pinned
-    universe_size: int = 6
+    universe_size: int = 15
     universe: tuple[str, ...] = PINNED_UNIVERSE
     dte_min: int = 7
     dte_max: int = 21
@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     bid_ask_max_frac: float = 0.20
     take_profit_frac: float = 0.50
     stop_mult: float = 2.0
+    regime_exit_confirmations: int = 2
     risk_free_rate: float = 0.04
 
     @property

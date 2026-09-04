@@ -67,9 +67,11 @@ def insert_order(
 ) -> int:
     create_all(path)
     con = connect(path)
+    now = datetime.now(timezone.utc).isoformat()
+    filled_ts = now if status == OrderStatus.FILLED.value else None
     cur = con.execute(
-        "INSERT INTO orders(structure_id, role, status, client_order_id, broker_order_id, qty, filled_qty, payload_json, created_ts) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO orders(structure_id, role, status, client_order_id, broker_order_id, qty, filled_qty, payload_json, created_ts, filled_ts) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
         (
             structure_id,
             role,
@@ -79,7 +81,8 @@ def insert_order(
             qty,
             filled_qty,
             payload_json,
-            datetime.now(timezone.utc).isoformat(),
+            now,
+            filled_ts,
         ),
     )
     con.commit()
@@ -137,7 +140,12 @@ def update_order(oid: int, *, status: str | None = None, filled_qty: float | Non
     fq = row[7] if filled_qty is None else filled_qty
     br = row[5] if broker_order_id is None else broker_order_id
     con = connect(path)
-    con.execute("UPDATE orders SET status=?, filled_qty=?, broker_order_id=? WHERE id=?", (st, fq, br, oid))
+    filled_ts = datetime.now(timezone.utc).isoformat() if st == OrderStatus.FILLED.value else None
+    con.execute(
+        "UPDATE orders SET status=?, filled_qty=?, broker_order_id=?, "
+        "filled_ts=CASE WHEN ? IS NOT NULL THEN COALESCE(filled_ts, ?) ELSE filled_ts END WHERE id=?",
+        (st, fq, br, filled_ts, filled_ts, oid),
+    )
     con.commit()
     con.close()
 
@@ -198,6 +206,31 @@ def list_orders(
 def latest_close_order(structure_id: int, path: Path = DEFAULT_PATH) -> tuple | None:
     rows = list_orders(path, role="close", structure_id=structure_id)
     return rows[-1] if rows else None
+
+
+def latest_filled_close_ts(symbol: str, path: Path = DEFAULT_PATH) -> datetime | None:
+    """Most recent completed close for a symbol.
+
+    Older databases did not record ``filled_ts``. For those rows, ``created_ts``
+    is a conservative best-effort fallback until a new close is reconciled.
+    """
+    create_all(path)
+    con = connect(path)
+    row = con.execute(
+        "SELECT COALESCE(o.filled_ts, o.created_ts) "
+        "FROM orders o JOIN structures s ON s.id=o.structure_id "
+        "WHERE o.role='close' AND o.status=? AND UPPER(s.symbol)=UPPER(?) "
+        "ORDER BY COALESCE(o.filled_ts, o.created_ts) DESC LIMIT 1",
+        (OrderStatus.FILLED.value, symbol),
+    ).fetchone()
+    con.close()
+    if not row or not row[0]:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(row[0]))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=parsed.tzinfo or timezone.utc)
 
 
 def list_entry_orders_with_ts(

@@ -2,6 +2,7 @@ from strategy.universe import (
     clear_universe_cache,
     discover_universe,
     rank_candidates,
+    rank_with_news,
 )
 
 
@@ -21,8 +22,9 @@ def test_discover_skips_non_optionable_and_caps():
         fetch_movers_fn=lambda: ["AMD"],
         optionable_fn=lambda sym: sym != "XYZ",
         prices_fn=lambda syms: {s: 50.0 for s in syms},
+        news_fn=lambda _syms: [],
     )
-    assert out == ["NVDA", "TSLA"]
+    assert out == ["NVDA", "AMD"]
 
 
 def test_discover_drops_cheap_prints():
@@ -33,6 +35,7 @@ def test_discover_drops_cheap_prints():
         fetch_movers_fn=lambda: [],
         optionable_fn=lambda _s: True,
         prices_fn=lambda _syms: {"NVDA": 180.0, "PENNY": 1.2},
+        news_fn=lambda _syms: [],
     )
     assert out == ["NVDA"]
 
@@ -61,6 +64,7 @@ def test_discover_cache_avoids_second_fetch():
         fetch_movers_fn=lambda: [],
         optionable_fn=lambda _s: True,
         prices_fn=lambda _s: {"NVDA": 180.0},
+        news_fn=lambda _syms: [],
     )
     second = discover_universe(
         limit=1,
@@ -72,3 +76,24 @@ def test_discover_cache_avoids_second_fetch():
     )
     assert first == second == ["NVDA"]
     assert calls["n"] == 1
+
+
+def test_recent_alpaca_news_can_promote_an_eligible_candidate():
+    eligible = ["AAA", "BBB", "CCC"]
+    articles = [
+        {"headline": "one", "symbols": ["CCC"]},
+        {"headline": "two", "symbols": ["CCC"]},
+        {"headline": "three", "symbols": ["CCC"]},
+    ]
+    ranked = rank_with_news(eligible, eligible, [], articles)
+    assert ranked[0] == "CCC"
+
+
+def test_news_cannot_add_a_symbol_outside_the_eligible_pool():
+    ranked = rank_with_news(
+        ["AAA", "BBB"],
+        ["AAA", "BBB"],
+        [],
+        [{"headline": "outside", "symbols": ["ZZZ"]}],
+    )
+    assert ranked == ["AAA", "BBB"]

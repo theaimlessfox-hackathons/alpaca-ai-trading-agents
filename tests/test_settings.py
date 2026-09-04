@@ -43,6 +43,8 @@ def test_iv_rv_knobs():
     s = _isolated()
     assert s.rv_lookback_days == 20
     assert s.iv_rv_rich_min > 0
+    assert s.regime_exit_confirmations == 2
+    assert s.universe_size == 15
 
 
 def test_paper_default_true():

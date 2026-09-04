@@ -6,7 +6,9 @@ import argparse
 import json
 import time
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from config.settings import get_settings
 from config.states import StructureStatus
@@ -17,16 +19,67 @@ from execution.marks import mark_from_live_quotes
 from execution.reconcile import reconcile_working
 from execution.recover import recover_startup
 from risk.engine import PortfolioView
-from risk.kill_switch import is_killed
+from risk.kill_switch import cooldown_active, is_killed
 from scheduler.loop import snapshot_and_maybe_flatten
-from scheduler.market_hours import is_market_open
-from storage.db import DEFAULT_PATH, create_all, insert_cycle
-from storage.ledger import active_structures, get_entry_payload, open_structures, pending_entries
+from scheduler.market_hours import is_market_open, is_watchlist_window
+from storage.db import DEFAULT_PATH, confirmed_regime_exit, create_all, insert_cycle
+from storage.ledger import (
+    active_structures,
+    get_entry_payload,
+    latest_filled_close_ts,
+    open_structures,
+    pending_entries,
+)
 from strategy.signals import iter_universe
 
 
-def universe() -> list[str]:
-    return list(iter_universe())
+ET = ZoneInfo("America/New_York")
+
+
+def _midday_refresh_due(scan: dict, now: datetime | None = None) -> bool:
+    """True once after noon ET when the latest scan is still the morning list."""
+    current = now.astimezone(ET) if now else datetime.now(ET)
+    minutes = current.hour * 60 + current.minute
+    if current.weekday() >= 5 or not ((12 * 60) <= minutes < (16 * 60)):
+        return False
+    try:
+        scanned = datetime.fromisoformat(str(scan.get("ts") or ""))
+    except ValueError:
+        return True
+    if scanned.tzinfo is None:
+        scanned = scanned.replace(tzinfo=timezone.utc)
+    scanned = scanned.astimezone(ET)
+    return scanned.date() == current.date() and scanned.hour < 12
+
+
+def universe(path: Path = DEFAULT_PATH, *, now: datetime | None = None) -> list[str]:
+    """Return the morning list, with one persisted refresh after noon ET."""
+    settings = get_settings()
+    if settings.universe_mode == "pinned":
+        return list(iter_universe(settings))
+
+    from storage.db import latest_scan, record_scan, trading_session_date
+    from strategy.universe import clear_universe_cache, set_session_universe
+
+    day = trading_session_date(now) if now is not None else None
+    existing = latest_scan(session_date=day, path=path)
+    refresh = bool(existing and existing.get("symbols") and _midday_refresh_due(existing, now))
+    if existing and existing.get("symbols") and not refresh:
+        symbols = [str(sym).upper() for sym in existing["symbols"]]
+        set_session_universe(symbols)
+        return symbols
+
+    if refresh:
+        clear_universe_cache()
+    symbols = list(iter_universe(settings))
+    if symbols:
+        record_scan(symbols, path=path, now=now)
+        return symbols
+    if existing and existing.get("symbols"):
+        # A failed midday data call must not erase a valid morning watchlist.
+        symbols = [str(sym).upper() for sym in existing["symbols"]]
+        set_session_universe(symbols)
+    return symbols
 
 
 def _prefetch_scan_articles(symbols: list[str], path: Path) -> None:
@@ -35,13 +88,20 @@ def _prefetch_scan_articles(symbols: list[str], path: Path) -> None:
     try:
         import asyncio
 
-        from storage.db import record_articles
+        from storage.db import list_articles, record_articles
+        from strategy.universe import cached_news_items
         from tools.news_parse import news_items
         from tools.research_tools import get_news
     except Exception:  # noqa: BLE001
         return
     for sym in symbols:
         try:
+            cached = cached_news_items(sym)
+            if cached:
+                record_articles(sym, cached, path=path)
+                continue
+            if list_articles(symbol=sym, path=path):
+                continue
             raw = asyncio.run(get_news(sym))
             record_articles(sym, news_items(raw), path=path)
         except Exception:  # noqa: BLE001 - one name must not kill the pass
@@ -86,7 +146,7 @@ def resolve_equity(*, live: bool, equity_fn: Callable[[], float] | None, path: P
     return 100_000.0
 
 
-def _book(path: Path, nav: float) -> PortfolioView:
+def _book(path: Path, nav: float, *, symbol: str | None = None) -> PortfolioView:
     # Capacity counts live exposure AND in-flight entries. CLOSING / NEEDS_REVIEW
     # still sit at Alpaca and must consume a slot.
     live = list(active_structures(path))
@@ -99,6 +159,10 @@ def _book(path: Path, nav: float) -> PortfolioView:
         open_count=len(live) + len(pending),
         per_underlying=per,
         killed=is_killed(),
+        cooldown=cooldown_active(
+            latest_filled_close_ts(symbol, path) if symbol else None,
+            datetime.now(timezone.utc),
+        ),
     )
 
 
@@ -129,7 +193,7 @@ def run_once(
 ) -> dict:
     """One autonomous pass: recover, snapshot/flatten, agent, execute, reconcile, exits."""
     create_all(path)
-    symbols = universe()
+    symbols = universe(path)
     summary: dict = {
         "candidates": symbols,
         "results": [],
@@ -138,12 +202,6 @@ def run_once(
         "reconciled": 0,
         "exits": [],
     }
-    try:
-        from storage.db import record_scan
-
-        record_scan(symbols, path=path)
-    except Exception:  # noqa: BLE001 - research log must not block a cycle
-        pass
     # Live path only: unit tests inject cycle_fn and must not hit Alpaca news.
     if cycle_fn is None and not skip_agent:
         _prefetch_scan_articles(symbols, path=path)
@@ -203,7 +261,6 @@ def run_once(
     if not skip_agent:
         from agents.cycle import CycleResult, run_cycle
 
-        book = _book(path, equity)
         for symbol in symbols:
             if cycle_fn is not None:
                 cycle = cycle_fn(symbol)
@@ -226,6 +283,9 @@ def run_once(
                     {"symbol": symbol, "verdict": cycle.verdict, "reason": cycle.reason, "submitted": False}
                 )
                 continue
+            # Rebuild per symbol so a recently closed name cannot churn straight
+            # back into another spread while unrelated symbols remain eligible.
+            book = _book(path, equity, symbol=symbol)
             out = dry_run(cycle.proposal, book, live=live, db_path=path, critic=cycle.critic)
             summary["results"].append(
                 {
@@ -235,7 +295,6 @@ def run_once(
                     "submitted": bool(out.get("submitted")),
                 }
             )
-            book = _book(path, equity)
 
     summary["reconciled"] = reconcile_working(path=path, lookup_fn=lookup_fn)
     summary["stale_canceled"] = cancel_stale_entries(path=path, lookup_fn=lookup_fn)
@@ -256,7 +315,13 @@ def run_once(
         if sym not in regime_by_symbol:
             regime_by_symbol[sym] = _regime_stand_down(sym)
         stand_down = regime_by_symbol.get(sym)
-        if mark is None and not stand_down:
+        confirmed_stand_down = confirmed_regime_exit(
+            sid,
+            stand_down,
+            required=get_settings().regime_exit_confirmations,
+            path=path,
+        )
+        if mark is None and not confirmed_stand_down:
             continue
         if mark is None:
             mark = credit
@@ -272,7 +337,7 @@ def run_once(
             credit=credit,
             mark=mark,
             structure_status=status,
-            regime_stand_down=stand_down,
+            regime_stand_down=confirmed_stand_down,
             open_payload=payload,
             close_fn=_close,
             submit_fn=live_submit,
@@ -304,6 +369,7 @@ def main() -> int:
         summary = run_once(live=args.live)
         print(json.dumps({k: summary[k] for k in summary}, default=str))
         return 2 if summary.get("blocked") else 0
+    prepared_watchlist_day = None
     while True:
         if is_killed() or is_market_open():
             summary = run_once(live=args.live)
@@ -319,6 +385,12 @@ def main() -> int:
                 flush=True,
             )
             time.sleep(60 if is_killed() or not is_market_open() else s.cycle_minutes * 60)
+        elif is_watchlist_window():
+            day = datetime.now(timezone.utc).astimezone().date().isoformat()
+            if prepared_watchlist_day != day:
+                print("start_of_day_watchlist", universe(), flush=True)
+                prepared_watchlist_day = day
+            time.sleep(60)
         else:
             time.sleep(60)
     return 0

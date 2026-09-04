@@ -47,6 +47,16 @@ def test_weekend_closed():
     assert is_market_open(sat) is False
 
 
+def test_start_of_day_watchlist_window():
+    from scheduler.market_hours import is_watchlist_window
+
+    et = ZoneInfo("America/New_York")
+    assert is_watchlist_window(datetime(2026, 9, 2, 9, 0, tzinfo=et)) is True
+    assert is_watchlist_window(datetime(2026, 9, 2, 9, 29, tzinfo=et)) is True
+    assert is_watchlist_window(datetime(2026, 9, 2, 9, 30, tzinfo=et)) is False
+    assert is_watchlist_window(datetime(2026, 9, 5, 9, 10, tzinfo=et)) is False
+
+
 def test_run_once_live_help_does_not_claim_refuse():
     from pathlib import Path
 
@@ -57,6 +67,105 @@ def test_run_once_live_help_does_not_claim_refuse():
 
 def test_cycle_universe():
     assert universe() == ["SPY", "QQQ", "IWM"]
+
+
+def test_discovered_watchlist_is_persisted_for_the_session(tmp_path, monkeypatch):
+    from config.settings import get_settings
+    from scheduler.cycle_loop import universe
+    from storage.db import create_all, latest_scan
+
+    db = tmp_path / "watchlist.db"
+    create_all(db)
+    monkeypatch.setenv("UNIVERSE_MODE", "discover")
+    get_settings.cache_clear()
+    calls = {"n": 0}
+
+    def discover(_settings=None):
+        calls["n"] += 1
+        return ["NVDA", "AMD", "AAPL"]
+
+    monkeypatch.setattr("scheduler.cycle_loop.iter_universe", discover)
+    try:
+        assert universe(db) == ["NVDA", "AMD", "AAPL"]
+        assert universe(db) == ["NVDA", "AMD", "AAPL"]
+    finally:
+        get_settings.cache_clear()
+    assert calls["n"] == 1
+    assert latest_scan(path=db)["symbols"] == ["NVDA", "AMD", "AAPL"]
+
+
+def test_watchlist_refreshes_once_after_noon_et(tmp_path, monkeypatch):
+    from config.settings import get_settings
+    from scheduler.cycle_loop import universe
+    from storage.db import create_all, latest_scan, record_scan
+
+    et = ZoneInfo("America/New_York")
+    db = tmp_path / "midday-watchlist.db"
+    create_all(db)
+    morning = datetime(2026, 9, 2, 9, 5, tzinfo=et)
+    noon = datetime(2026, 9, 2, 12, 5, tzinfo=et)
+    later = datetime(2026, 9, 2, 13, 0, tzinfo=et)
+    record_scan(["NVDA", "AMD"], path=db, now=morning)
+    monkeypatch.setenv("UNIVERSE_MODE", "discover")
+    get_settings.cache_clear()
+    calls = {"n": 0}
+
+    def discover(_settings=None):
+        calls["n"] += 1
+        return ["AAPL", "META", "TSLA"]
+
+    monkeypatch.setattr("scheduler.cycle_loop.iter_universe", discover)
+    try:
+        assert universe(db, now=noon) == ["AAPL", "META", "TSLA"]
+        assert universe(db, now=later) == ["AAPL", "META", "TSLA"]
+    finally:
+        get_settings.cache_clear()
+    assert calls["n"] == 1
+    assert latest_scan("2026-09-02", path=db)["symbols"] == ["AAPL", "META", "TSLA"]
+
+
+def test_failed_midday_refresh_keeps_morning_watchlist(tmp_path, monkeypatch):
+    from config.settings import get_settings
+    from scheduler.cycle_loop import universe
+    from storage.db import create_all, record_scan
+
+    et = ZoneInfo("America/New_York")
+    db = tmp_path / "failed-midday-watchlist.db"
+    create_all(db)
+    record_scan(["NVDA", "AMD"], path=db, now=datetime(2026, 9, 2, 9, 5, tzinfo=et))
+    monkeypatch.setenv("UNIVERSE_MODE", "discover")
+    get_settings.cache_clear()
+    monkeypatch.setattr("scheduler.cycle_loop.iter_universe", lambda _settings=None: [])
+    try:
+        assert universe(db, now=datetime(2026, 9, 2, 12, 5, tzinfo=et)) == ["NVDA", "AMD"]
+    finally:
+        get_settings.cache_clear()
+
+
+def test_scheduler_book_enforces_symbol_close_cooldown(tmp_path):
+    from config.states import OrderStatus, StructureStatus
+    from risk.kill_switch import set_kill_switch
+    from scheduler.cycle_loop import _book
+    from storage.db import create_all
+    from storage.ledger import insert_order, insert_structure, latest_filled_close_ts
+
+    set_kill_switch(False)
+    db = tmp_path / "cooldown.db"
+    create_all(db)
+    sid = insert_structure("SPY", status=StructureStatus.CLOSED.value, path=db)
+    insert_order(
+        structure_id=sid,
+        role="close",
+        status=OrderStatus.FILLED.value,
+        client_order_id="close-spy",
+        qty=1,
+        filled_qty=1,
+        path=db,
+    )
+
+    assert latest_filled_close_ts("SPY", db) is not None
+    assert _book(db, 100_000.0, symbol="SPY").cooldown is True
+    assert _book(db, 100_000.0, symbol="QQQ").cooldown is False
 
 
 def test_run_once_runs_agent_snapshot_and_reconcile(tmp_path):
@@ -326,6 +435,16 @@ def test_run_once_regime_exit_without_mark(tmp_path, monkeypatch):
         path=db,
     )
     monkeypatch.setattr("scheduler.cycle_loop.mark_from_live_quotes", lambda _p: None)
+    first = run_once(
+        path=db,
+        equity_fn=lambda: 100_000.0,
+        cycle_fn=lambda sym: CycleResult(sym, None, "stand_down", "cheap_iv_rv"),
+        lookup_fn=lambda _c: None,
+        submit_fn=lambda _p: {"id": "brk-reg"},
+    )
+    assert not first["exits"]
+    assert get_structure(sid, db)[2] == StructureStatus.OPEN.value
+
     summary = run_once(
         path=db,
         equity_fn=lambda: 100_000.0,
@@ -335,6 +454,17 @@ def test_run_once_regime_exit_without_mark(tmp_path, monkeypatch):
     )
     assert any(e["reason"] == "regime" for e in summary["exits"])
     assert get_structure(sid, db)[2] == StructureStatus.CLOSING.value
+
+
+def test_breakout_regime_exit_remains_immediate(tmp_path):
+    from storage.db import confirmed_regime_exit, create_all
+
+    db = tmp_path / "regime-state.db"
+    create_all(db)
+    assert confirmed_regime_exit(1, "breakout", required=2, path=db) == "breakout"
+    assert confirmed_regime_exit(2, "cheap_iv_rv", required=2, path=db) is None
+    assert confirmed_regime_exit(2, None, required=2, path=db) is None
+    assert confirmed_regime_exit(2, "cheap_iv_rv", required=2, path=db) is None
 
 
 def test_first_session_print_is_sod_not_first_ever(tmp_path):

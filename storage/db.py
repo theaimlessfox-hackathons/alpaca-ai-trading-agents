@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS orders (
   qty REAL,
   filled_qty REAL DEFAULT 0,
   payload_json TEXT,
-  created_ts TEXT
+  created_ts TEXT,
+  filled_ts TEXT
 );
 CREATE TABLE IF NOT EXISTS intents (
   client_order_id TEXT PRIMARY KEY,
@@ -74,6 +75,12 @@ CREATE TABLE IF NOT EXISTS articles (
   source TEXT,
   ts TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS regime_exit_state (
+  structure_id INTEGER PRIMARY KEY,
+  reason TEXT,
+  confirmations INTEGER NOT NULL DEFAULT 0,
+  updated_ts TEXT NOT NULL
+);
 """
 
 
@@ -93,6 +100,8 @@ def create_all(path: Path = DEFAULT_PATH) -> None:
         con.execute("ALTER TABLE orders ADD COLUMN payload_json TEXT")
     if "created_ts" not in cols:
         con.execute("ALTER TABLE orders ADD COLUMN created_ts TEXT")
+    if "filled_ts" not in cols:
+        con.execute("ALTER TABLE orders ADD COLUMN filled_ts TEXT")
     eq_cols = {row[1] for row in con.execute("PRAGMA table_info(equity_history)")}
     if "ts" not in eq_cols:
         con.execute("ALTER TABLE equity_history ADD COLUMN ts TEXT")
@@ -122,6 +131,12 @@ def create_all(path: Path = DEFAULT_PATH) -> None:
           url TEXT,
           source TEXT,
           ts TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS regime_exit_state (
+          structure_id INTEGER PRIMARY KEY,
+          reason TEXT,
+          confirmations INTEGER NOT NULL DEFAULT 0,
+          updated_ts TEXT NOT NULL
         );
         """
     )
@@ -217,6 +232,43 @@ def get_cycle(cid: int, path: Path = DEFAULT_PATH) -> tuple | None:
     row = con.execute("SELECT id, symbol, verdict, reason FROM cycles WHERE id=?", (cid,)).fetchone()
     con.close()
     return row
+
+
+def confirmed_regime_exit(
+    structure_id: int,
+    reason: str | None,
+    *,
+    required: int = 2,
+    path: Path = DEFAULT_PATH,
+) -> str | None:
+    """Debounce noisy cheap-IV/RV exits per structure.
+
+    Risk-off signals other than ``cheap_iv_rv`` remain immediate. A healthy
+    regime clears the counter, and keying by structure prevents an old trade's
+    history from prematurely closing a later position in the same symbol.
+    """
+    create_all(path)
+    con = connect(path)
+    if reason != "cheap_iv_rv":
+        con.execute("DELETE FROM regime_exit_state WHERE structure_id=?", (structure_id,))
+        con.commit()
+        con.close()
+        return reason
+
+    row = con.execute(
+        "SELECT reason, confirmations FROM regime_exit_state WHERE structure_id=?",
+        (structure_id,),
+    ).fetchone()
+    count = int(row[1]) + 1 if row and row[0] == reason else 1
+    con.execute(
+        "INSERT INTO regime_exit_state(structure_id, reason, confirmations, updated_ts) VALUES (?,?,?,?) "
+        "ON CONFLICT(structure_id) DO UPDATE SET reason=excluded.reason, "
+        "confirmations=excluded.confirmations, updated_ts=excluded.updated_ts",
+        (structure_id, reason, count, datetime.now(timezone.utc).isoformat()),
+    )
+    con.commit()
+    con.close()
+    return reason if count >= max(1, int(required)) else None
 
 
 def insert_equity(equity: float, path: Path = DEFAULT_PATH) -> None:
@@ -326,18 +378,22 @@ def recent_cycles(symbol: str | None = None, limit: int = 5, path: Path = DEFAUL
     ]
 
 
-def record_scan(symbols: list[str], path: Path = DEFAULT_PATH) -> int:
+def record_scan(
+    symbols: list[str], path: Path = DEFAULT_PATH, *, now: datetime | None = None
+) -> int:
     """Append today's discovered scan. Empty list is stored so the page can
     show a failed discover instead of inventing yesterday's names."""
     create_all(path)
-    now = datetime.now(timezone.utc)
-    day = trading_session_date(now) or now.date().isoformat()
+    timestamp = now or datetime.now(timezone.utc)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    day = trading_session_date(timestamp) or timestamp.date().isoformat()
     import json
 
     con = connect(path)
     cur = con.execute(
         "INSERT INTO scans(session_date, symbols_json, ts) VALUES (?,?,?)",
-        (day, json.dumps([str(s).upper() for s in symbols]), now.isoformat()),
+        (day, json.dumps([str(s).upper() for s in symbols]), timestamp.isoformat()),
     )
     con.commit()
     sid = int(cur.lastrowid)

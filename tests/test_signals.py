@@ -17,7 +17,8 @@ def test_discover_universe_uses_alpaca_rank(monkeypatch):
     monkeypatch.setattr(uni, "fetch_movers", lambda **_k: ["AMD", "NVDA"])
     monkeypatch.setattr(uni, "asset_optionable", lambda sym, **_k: True)
     monkeypatch.setattr(uni, "last_prices", lambda _syms, **_k: {s: 50.0 for s in _syms})
+    monkeypatch.setattr(uni, "fetch_market_news", lambda _syms, **_k: [])
     s = Settings(universe_mode="discover", universe_size=4)
-    assert iter_universe(s) == ["NVDA", "TSLA", "META", "AMD"]
+    assert iter_universe(s) == ["NVDA", "AMD", "TSLA", "META"]
     assert filter_symbol("NVDA", s) == "NVDA"
     assert filter_symbol("SPY", s) is None
